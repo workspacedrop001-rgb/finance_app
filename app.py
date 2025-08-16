@@ -1,140 +1,151 @@
-import React, { useMemo, useRef, useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import {
-  BarChart, Bar, PieChart, Pie, Cell, Tooltip, XAxis, YAxis, CartesianGrid, Legend, ResponsiveContainer
-} from "recharts";
+# finance_app.py
+import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
+from io import BytesIO
 
-const MESES_PT = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
-const CATS_RECEITA = ["Vendas","Serviços","Outros"];
-const CATS_DESPESA = ["Materiais","Abrasivo","Energia","Manutencao","Salarios","Marketing","Prolabore","Outros"];
-const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#AA336A", "#8884d8", "#82ca9d", "#a4de6c"];
+st.set_page_config(page_title="Finance App CNC", layout="wide")
 
-function moeda(v:number){
-  return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
+# ===========================
+# Dados iniciais
+# ===========================
+if "movs" not in st.session_state:
+    st.session_state.movs = pd.DataFrame(columns=["tipo","descricao","categoria","valor","data","observacoes","pessoaProlabore"])
 
-export default function FinanceApp() {
-  const [activeTab, setActiveTab] = useState<"dashboard"|"movimentacoes"|"relatorios"|"configuracoes">("dashboard");
-  const [movs, setMovs] = useState<Array<{id:number,tipo:"Receita"|"Despesa",descricao:string,categoria:string,valor:number,data:string,observacoes?:string,pessoaProlabore?:"Lucas"|"Binho"|""}>>([]);
-  const [reserva, setReserva] = useState<number>(2000);
+if "reserva" not in st.session_state:
+    st.session_state.reserva = 2000.0
 
-  // Filtros (Relatórios)
-  const [filtroAno, setFiltroAno] = useState<string>("");
-  const [filtroMes, setFiltroMes] = useState<string>("");
+CATS_RECEITA = ["Vendas","Serviços","Outros"]
+CATS_DESPESA = ["Materiais","Abrasivo","Energia","Manutenção","Salarios","Marketing","Prolabore","Outros"]
 
-  // ---- Movimentações: formulário ----
-  const [form, setForm] = useState({
-    tipo: "" as "Receita"|"Despesa"|"",
-    descricao: "",
-    categoria: "",
-    valor: "",
-    data: "",
-    observacoes: "",
-    pessoaProlabore: "" as "Lucas"|"Binho"|"",
-  });
+# ===========================
+# Funções auxiliares
+# ===========================
+def moeda(v):
+    return f"R${v:,.2f}"
 
-  const resetForm = () => setForm({tipo:"",descricao:"",categoria:"",valor:"",data:"",observacoes:"",pessoaProlabore:""});
+def calcular_kpis(df):
+    receita = df[df.tipo=="Receita"]["valor"].sum()
+    despesa = df[df.tipo=="Despesa"]["valor"].sum()
+    lucro = receita - despesa
+    pl = lucro * 0.3
+    pb = lucro * 0.7
+    margem = (lucro/receita*100) if receita>0 else 0
+    lucro_divisao = lucro - st.session_state.reserva
+    return receita, despesa, lucro, pl, pb, margem, lucro_divisao
 
-  const addMov = () => {
-    const {tipo, descricao, categoria, valor, data} = form;
-    const valorNum = parseFloat(String(valor).replace(",","."));
-    if(!tipo || !descricao || !categoria || !valorNum || !data){
-      alert("Preencha os campos obrigatórios (*)");
-      return;
-    }
-    const novo = { id: Date.now(), ...form, valor: valorNum } as any;
-    if(novo.categoria !== "Prolabore") novo.pessoaProlabore = ""; // só se Prolabore
-    setMovs(prev => [...prev, novo]);
-    resetForm();
-  };
+# ===========================
+# Menu lateral
+# ===========================
+st.sidebar.title("Menu")
+aba = st.sidebar.radio("Escolha a aba:", ["Dashboard","Movimentações","Relatórios","Configurações"])
 
-  // ---- Cálculos globais (Dashboard) ----
-  const receitaTotal = useMemo(() => movs.filter(m=>m.tipo==="Receita").reduce((a,b)=>a+b.valor,0),[movs]);
-  const despesasTotais = useMemo(() => movs.filter(m=>m.tipo==="Despesa").reduce((a,b)=>a+b.valor,0),[movs]);
-  const lucroLiquido = useMemo(()=> receitaTotal - despesasTotais,[receitaTotal,despesasTotais]);
-  const prolaboreLucas = useMemo(()=> lucroLiquido*0.3,[lucroLiquido]);
-  const prolaboreBinho = useMemo(()=> lucroLiquido*0.7,[lucroLiquido]);
-  const lucroDivisao = useMemo(()=> lucroLiquido - (reserva||0),[lucroLiquido,reserva]);
-  const margem = useMemo(()=> receitaTotal>0 ? (lucroLiquido/receitaTotal)*100 : 0,[receitaTotal,lucroLiquido]);
+# ===========================
+# ABA: Dashboard
+# ===========================
+if aba=="Dashboard":
+    st.title("Dashboard Financeiro")
+    
+    receita, despesa, lucro, pl, pb, margem, lucro_divisao = calcular_kpis(st.session_state.movs)
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Receita Total", moeda(receita))
+    col2.metric("Despesas Totais", moeda(despesa))
+    col3.metric("Prolabore Lucas", moeda(pl))
+    col4.metric("Prolabore Binho", moeda(pb))
+    
+    st.subheader("Resultados")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Lucro Líquido", moeda(lucro))
+    col2.number_input("Reserva (editável)", value=st.session_state.reserva, key="reserva_input", step=100.0, on_change=lambda: st.session_state.__setitem__("reserva", st.session_state.reserva_input))
+    col3.metric("Lucro para Divisão", moeda(lucro_divisao))
+    
+    st.subheader("Receitas vs Despesas")
+    df_chart = st.session_state.movs.copy()
+    if not df_chart.empty:
+        df_chart_group = df_chart.groupby([df_chart.data.dt.to_period("M")])["valor","tipo"].sum().unstack(fill_value=0)
+        df_chart_group.columns = df_chart_group.columns.droplevel()
+        df_chart_group.plot(kind="bar", color=["green","red"])
+        st.pyplot(plt.gcf())
+        plt.clf()
+    
+    st.subheader("Distribuição de Despesas")
+    df_desp = st.session_state.movs[st.session_state.movs.tipo=="Despesa"]
+    if not df_desp.empty:
+        df_pie = df_desp.groupby("categoria")["valor"].sum()
+        df_pie.plot(kind="pie", autopct="%1.1f%%")
+        st.pyplot(plt.gcf())
+        plt.clf()
 
-  // ---- Agregações por mês (para gráficos) ----
-  const lastNMonths = (n:number) => {
-    const arr:{key:string,label:string,year:number,month:number}[] = [];
-    const base = new Date(); base.setDate(1);
-    for(let i=n-1;i>=0;i--){
-      const d = new Date(base.getFullYear(), base.getMonth()-i, 1);
-      const y = d.getFullYear();
-      const m = d.getMonth();
-      arr.push({key:`${y}-${String(m+1).padStart(2,"0")}`,label:MESES_PT[m],year:y,month:m+1});
-    }
-    return arr;
-  };
+# ===========================
+# ABA: Movimentações
+# ===========================
+elif aba=="Movimentações":
+    st.title("Movimentações Financeiras")
+    
+    with st.form("novo_mov"):
+        tipo = st.selectbox("Tipo*", ["","Receita","Despesa"])
+        descricao = st.text_input("Descrição*")
+        categoria = st.selectbox("Categoria*", CATS_RECEITA if tipo=="Receita" else CATS_DESPESA)
+        pessoa = ""
+        if categoria=="Prolabore" and tipo=="Despesa":
+            pessoa = st.selectbox("Pessoa (Prolabore)", ["Lucas","Binho"])
+        valor = st.number_input("Valor* (R$)", min_value=0.0, step=0.01)
+        data = st.date_input("Data*")
+        observacoes = st.text_area("Observações (opcional)")
+        submitted = st.form_submit_button("Adicionar Movimento")
+        if submitted:
+            new_mov = {"tipo":tipo,"descricao":descricao,"categoria":categoria,"valor":valor,"data":pd.to_datetime(data),"observacoes":observacoes,"pessoaProlabore":pessoa}
+            st.session_state.movs = pd.concat([st.session_state.movs, pd.DataFrame([new_mov])], ignore_index=True)
+            st.success("Movimento adicionado!")
 
-  const serieReceitaDespesa = useMemo(()=>{
-    const months = lastNMonths(6);
-    return months.map(({year,month,label})=>{
-      const receita = movs.filter(m=>m.tipo==="Receita" && new Date(m.data).getFullYear()===year && (new Date(m.data).getMonth()+1)===month).reduce((a,b)=>a+b.valor,0);
-      const despesa = movs.filter(m=>m.tipo==="Despesa" && new Date(m.data).getFullYear()===year && (new Date(m.data).getMonth()+1)===month).reduce((a,b)=>a+b.valor,0);
-      return { mes: label, receita, despesa };
-    });
-  },[movs]);
+    st.subheader("Lista de Movimentos")
+    st.dataframe(st.session_state.movs)
 
-  const pieDespesas = useMemo(()=>{
-    const mapa: Record<string, number> = {};
-    CATS_DESPESA.forEach(c=> mapa[c]=0);
-    movs.filter(m=>m.tipo==="Despesa").forEach(m=>{ mapa[m.categoria] = (mapa[m.categoria]||0)+m.valor; });
-    return Object.entries(mapa).map(([name,value])=>({ name: name==="Manutencao"?"Manutenção":name, value }));
-  },[movs]);
+# ===========================
+# ABA: Relatórios
+# ===========================
+elif aba=="Relatórios":
+    st.title("Relatórios e Análises")
+    st.subheader("Filtros")
+    anos = sorted(st.session_state.movs.data.dt.year.unique()) if not st.session_state.movs.empty else []
+    meses = list(range(1,13))
+    
+    col1, col2, col3 = st.columns(3)
+    filtro_ano = col1.selectbox("Ano", ["Todos"]+anos)
+    filtro_mes = col2.selectbox("Mês", ["Todos"]+meses)
+    
+    df_rel = st.session_state.movs.copy()
+    if filtro_ano!="Todos":
+        df_rel = df_rel[df_rel.data.dt.year==filtro_ano]
+    if filtro_mes!="Todos":
+        df_rel = df_rel[df_rel.data.dt.month==filtro_mes]
+    
+    receita, despesa, lucro, pl, pb, margem, lucro_divisao = calcular_kpis(df_rel)
+    
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("Receita Total", moeda(receita))
+    col2.metric("Lucro Líquido", moeda(lucro))
+    col3.metric("Margem de Lucro", f"{margem:.1f}%")
+    col4.metric("Prolabore Lucas", moeda(pl))
+    col5.metric("Prolabore Binho", moeda(pb))
+    col6.metric("Reserva", moeda(st.session_state.reserva))
+    
+    st.subheader("Resumo Mensal (últimos 6 meses)")
+    if not df_rel.empty:
+        resumo = df_rel.copy()
+        resumo["mes"] = resumo.data.dt.to_period("M")
+        resumo = resumo.groupby("mes")["valor"].agg(["sum"])
+        st.dataframe(resumo)
+    
+    # Exportar PDF simples
+    st.subheader("Exportar PDF")
+    pdf_buffer = BytesIO()
+    st.download_button("Baixar PDF (simples)", data=pdf_buffer.getvalue(), file_name="relatorio.pdf", mime="application/pdf")
 
-  // ---- Relatórios: aplicar filtros ----
-  const movsFiltrados = useMemo(()=>{
-    return movs.filter(m=>{
-      const d = m.data ? new Date(m.data) : null;
-      if(!d) return false;
-      const passAno = filtroAno ? d.getFullYear()===Number(filtroAno) : true;
-      const passMes = filtroMes ? (d.getMonth()+1)===Number(filtroMes) : true;
-      return passAno && passMes;
-    });
-  },[movs,filtroAno,filtroMes]);
-
-  const kpisRel = useMemo(()=>{
-    const r = movsFiltrados.filter(m=>m.tipo==="Receita").reduce((a,b)=>a+b.valor,0);
-    const d = movsFiltrados.filter(m=>m.tipo==="Despesa").reduce((a,b)=>a+b.valor,0);
-    const ll = r - d;
-    const pl = ll*0.3; const pb = ll*0.7;
-    const mg = r>0 ? (ll/r)*100 : 0;
-    return { r, d, pl, pb, ll, mg };
-  },[movsFiltrados]);
-
-  const resumoMensal6 = useMemo(()=>{
-    const months = lastNMonths(6);
-    return months.map(({label,year,month})=>{
-      const r = movs.filter(m=>m.tipo==="Receita" && new Date(m.data).getFullYear()===year && (new Date(m.data).getMonth()+1)===month).reduce((a,b)=>a+b.valor,0);
-      const d = movs.filter(m=>m.tipo==="Despesa" && new Date(m.data).getFullYear()===year && (new Date(m.data).getMonth()+1)===month).reduce((a,b)=>a+b.valor,0);
-      const l = r - d; const mg = r>0 ? (l/r)*100 : 0;
-      return { mes: label, receita: r, despesa: d, lucro: l, margem: mg };
-    });
-  },[movs]);
-
-  const refRelatorios = useRef<HTMLDivElement|null>(null);
-  const exportarPDF = () => {
-    const conteudo = refRelatorios.current?.innerHTML || "<h1>Relatório</h1>";
-    const w = window.open("", "print");
-    if(!w) return;
-    w.document.write(`<!doctype html><html><head><meta charset='utf-8'><title>Relatório</title>
-      <style>body{font-family:Arial,sans-serif;padding:16px} h1,h2{margin:0 0 8px} table{width:100%;border-collapse:collapse;margin-top:8px} th,td{border:1px solid #ddd;padding:6px;text-align:center}</style>
-    </head><body>${conteudo}</body></html>`);
-    w.document.close();
-    w.focus();
-    w.print();
-  };
-
-  return (
-    <div className="p-6 space-y-6">
-      {/* Menu */}
-      <div className="flex gap-3">
-        <Button variant={activeTab==="dashboard"?"default":"outline"} onClick={()=>setActiveTab("dashboard")}>Dashboard</Button>
-        <Button variant={activeTab==="movimentacoes"?"default":"outline"} onClick={()=>setActiveTab("movimentacoes")}>Movimentações</Button>
-        <Button variant={activeTab==="relatorios"?"default":"outline"} onClick={()=>setActiveTab("relatorios")}>Relatórios</Button>
-        <Button variant={activeTab==="config
+# ===========================
+# ABA: Configurações
+# ===========================
+elif aba=="Configurações":
+    st.title("Configurações")
+    st.info("Aqui você poderá alterar configurações do app no futuro.")
