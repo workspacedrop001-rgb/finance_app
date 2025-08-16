@@ -1,118 +1,140 @@
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-from io import BytesIO
+import React, { useMemo, useRef, useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import {
+  BarChart, Bar, PieChart, Pie, Cell, Tooltip, XAxis, YAxis, CartesianGrid, Legend, ResponsiveContainer
+} from "recharts";
 
-st.set_page_config(page_title="Finance App CNC", layout="wide")
+const MESES_PT = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+const CATS_RECEITA = ["Vendas","Serviços","Outros"];
+const CATS_DESPESA = ["Materiais","Abrasivo","Energia","Manutencao","Salarios","Marketing","Prolabore","Outros"];
+const COLORS = ["#0088FE", "#00C49F", "#FFBB28", "#FF8042", "#AA336A", "#8884d8", "#82ca9d", "#a4de6c"];
 
-# --- Dados iniciais ---
-if "movs" not in st.session_state:
-    st.session_state.movs = pd.DataFrame(columns=["tipo","descricao","categoria","valor","data","observacoes","pessoaProlabore"])
+function moeda(v:number){
+  return v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
 
-if "reserva" not in st.session_state:
-    st.session_state.reserva = 2000
+export default function FinanceApp() {
+  const [activeTab, setActiveTab] = useState<"dashboard"|"movimentacoes"|"relatorios"|"configuracoes">("dashboard");
+  const [movs, setMovs] = useState<Array<{id:number,tipo:"Receita"|"Despesa",descricao:string,categoria:string,valor:number,data:string,observacoes?:string,pessoaProlabore?:"Lucas"|"Binho"|""}>>([]);
+  const [reserva, setReserva] = useState<number>(2000);
 
-# --- Funções ---
-def moeda(v):
-    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+  // Filtros (Relatórios)
+  const [filtroAno, setFiltroAno] = useState<string>("");
+  const [filtroMes, setFiltroMes] = useState<string>("");
 
-def add_movimento(tipo, descricao, categoria, valor, data, obs, pessoa):
-    st.session_state.movs.loc[len(st.session_state.movs)] = [tipo, descricao, categoria, valor, data, obs, pessoa]
-    st.success("Movimento adicionado!")
+  // ---- Movimentações: formulário ----
+  const [form, setForm] = useState({
+    tipo: "" as "Receita"|"Despesa"|"",
+    descricao: "",
+    categoria: "",
+    valor: "",
+    data: "",
+    observacoes: "",
+    pessoaProlabore: "" as "Lucas"|"Binho"|"",
+  });
 
-def exportar_pdf(df):
-    # Exporta resumo para PDF simples (via HTML)
-    from fpdf import FPDF
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.cell(200, 10, txt="Relatório Financeiro CNC", ln=True, align='C')
-    pdf.ln(10)
-    for i, row in df.iterrows():
-        pdf.cell(0, 8, txt=f"{row['data']} - {row['tipo']} - {row['descricao']} - {moeda(row['valor'])}", ln=True)
-    pdf_output = BytesIO()
-    pdf.output(pdf_output)
-    return pdf_output
+  const resetForm = () => setForm({tipo:"",descricao:"",categoria:"",valor:"",data:"",observacoes:"",pessoaProlabore:""});
 
-# --- Menu ---
-menu = st.sidebar.selectbox("Menu", ["Dashboard", "Movimentações", "Relatórios", "Configurações"])
+  const addMov = () => {
+    const {tipo, descricao, categoria, valor, data} = form;
+    const valorNum = parseFloat(String(valor).replace(",","."));
+    if(!tipo || !descricao || !categoria || !valorNum || !data){
+      alert("Preencha os campos obrigatórios (*)");
+      return;
+    }
+    const novo = { id: Date.now(), ...form, valor: valorNum } as any;
+    if(novo.categoria !== "Prolabore") novo.pessoaProlabore = ""; // só se Prolabore
+    setMovs(prev => [...prev, novo]);
+    resetForm();
+  };
 
-# --- Dashboard ---
-if menu == "Dashboard":
-    receita_total = st.session_state.movs[st.session_state.movs.tipo=="Receita"]["valor"].sum()
-    despesas_totais = st.session_state.movs[st.session_state.movs.tipo=="Despesa"]["valor"].sum()
-    lucro_liquido = receita_total - despesas_totais
-    prolabore_lucas = lucro_liquido * 0.3
-    prolabore_binho = lucro_liquido * 0.7
-    lucro_divisao = lucro_liquido - st.session_state.reserva
+  // ---- Cálculos globais (Dashboard) ----
+  const receitaTotal = useMemo(() => movs.filter(m=>m.tipo==="Receita").reduce((a,b)=>a+b.valor,0),[movs]);
+  const despesasTotais = useMemo(() => movs.filter(m=>m.tipo==="Despesa").reduce((a,b)=>a+b.valor,0),[movs]);
+  const lucroLiquido = useMemo(()=> receitaTotal - despesasTotais,[receitaTotal,despesasTotais]);
+  const prolaboreLucas = useMemo(()=> lucroLiquido*0.3,[lucroLiquido]);
+  const prolaboreBinho = useMemo(()=> lucroLiquido*0.7,[lucroLiquido]);
+  const lucroDivisao = useMemo(()=> lucroLiquido - (reserva||0),[lucroLiquido,reserva]);
+  const margem = useMemo(()=> receitaTotal>0 ? (lucroLiquido/receitaTotal)*100 : 0,[receitaTotal,lucroLiquido]);
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Receita Total", moeda(receita_total))
-    col2.metric("Despesas Totais", moeda(despesas_totais))
-    col3.metric("Prolabore Lucas (30%)", moeda(prolabore_lucas))
-    col4.metric("Prolabore Binho (70%)", moeda(prolabore_binho))
+  // ---- Agregações por mês (para gráficos) ----
+  const lastNMonths = (n:number) => {
+    const arr:{key:string,label:string,year:number,month:number}[] = [];
+    const base = new Date(); base.setDate(1);
+    for(let i=n-1;i>=0;i--){
+      const d = new Date(base.getFullYear(), base.getMonth()-i, 1);
+      const y = d.getFullYear();
+      const m = d.getMonth();
+      arr.push({key:`${y}-${String(m+1).padStart(2,"0")}`,label:MESES_PT[m],year:y,month:m+1});
+    }
+    return arr;
+  };
 
-    st.write("### Resultados")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Lucro Líquido", moeda(lucro_liquido))
-    col2.number_input("Reserva (editável)", value=st.session_state.reserva, key="reserva_input", on_change=lambda: st.session_state.update({"reserva": st.session_state.reserva_input}))
-    col3.metric("Lucro para Divisão", moeda(lucro_divisao))
+  const serieReceitaDespesa = useMemo(()=>{
+    const months = lastNMonths(6);
+    return months.map(({year,month,label})=>{
+      const receita = movs.filter(m=>m.tipo==="Receita" && new Date(m.data).getFullYear()===year && (new Date(m.data).getMonth()+1)===month).reduce((a,b)=>a+b.valor,0);
+      const despesa = movs.filter(m=>m.tipo==="Despesa" && new Date(m.data).getFullYear()===year && (new Date(m.data).getMonth()+1)===month).reduce((a,b)=>a+b.valor,0);
+      return { mes: label, receita, despesa };
+    });
+  },[movs]);
 
-    st.write("### Receitas vs Despesas")
-    fig, ax = plt.subplots(figsize=(8,4))
-    movs_mes = st.session_state.movs.groupby("tipo")["valor"].sum()
-    ax.bar(["Receitas"], [movs_mes.get("Receita",0)], color="green")
-    ax.bar(["Despesas"], [movs_mes.get("Despesa",0)], color="red")
-    st.pyplot(fig)
+  const pieDespesas = useMemo(()=>{
+    const mapa: Record<string, number> = {};
+    CATS_DESPESA.forEach(c=> mapa[c]=0);
+    movs.filter(m=>m.tipo==="Despesa").forEach(m=>{ mapa[m.categoria] = (mapa[m.categoria]||0)+m.valor; });
+    return Object.entries(mapa).map(([name,value])=>({ name: name==="Manutencao"?"Manutenção":name, value }));
+  },[movs]);
 
-    st.write("### Distribuição de Despesas")
-    desp = st.session_state.movs[st.session_state.movs.tipo=="Despesa"].groupby("categoria")["valor"].sum()
-    fig2, ax2 = plt.subplots()
-    ax2.pie(desp, labels=desp.index, autopct="%1.1f%%")
-    st.pyplot(fig2)
+  // ---- Relatórios: aplicar filtros ----
+  const movsFiltrados = useMemo(()=>{
+    return movs.filter(m=>{
+      const d = m.data ? new Date(m.data) : null;
+      if(!d) return false;
+      const passAno = filtroAno ? d.getFullYear()===Number(filtroAno) : true;
+      const passMes = filtroMes ? (d.getMonth()+1)===Number(filtroMes) : true;
+      return passAno && passMes;
+    });
+  },[movs,filtroAno,filtroMes]);
 
-# --- Movimentações ---
-elif menu == "Movimentações":
-    st.write("## Novo Movimento")
-    with st.form("form_mov"):
-        tipo = st.selectbox("Tipo*", ["Receita","Despesa"])
-        descricao = st.text_input("Descrição*")
-        categoria = st.selectbox("Categoria*", ["Vendas","Serviços","Outros"] if tipo=="Receita" else ["Materiais","Abrasivo","Energia","Manutencao","Salarios","Marketing","Prolabore","Outros"])
-        pessoa = ""
-        if tipo=="Despesa" and categoria=="Prolabore":
-            pessoa = st.selectbox("Pessoa (Prolabore)", ["Lucas","Binho"])
-        valor = st.number_input("Valor* (R$)", min_value=0.0, step=0.01)
-        data = st.date_input("Data*")
-        obs = st.text_area("Observações (opcional)")
-        submitted = st.form_submit_button("Adicionar Movimento")
-        if submitted:
-            if not tipo or not descricao or not categoria or not valor or not data:
-                st.error("Preencha todos os campos obrigatórios!")
-            else:
-                add_movimento(tipo, descricao, categoria, valor, data, obs, pessoa)
+  const kpisRel = useMemo(()=>{
+    const r = movsFiltrados.filter(m=>m.tipo==="Receita").reduce((a,b)=>a+b.valor,0);
+    const d = movsFiltrados.filter(m=>m.tipo==="Despesa").reduce((a,b)=>a+b.valor,0);
+    const ll = r - d;
+    const pl = ll*0.3; const pb = ll*0.7;
+    const mg = r>0 ? (ll/r)*100 : 0;
+    return { r, d, pl, pb, ll, mg };
+  },[movsFiltrados]);
 
-    st.write("## Lista de Movimentos")
-    st.dataframe(st.session_state.movs)
+  const resumoMensal6 = useMemo(()=>{
+    const months = lastNMonths(6);
+    return months.map(({label,year,month})=>{
+      const r = movs.filter(m=>m.tipo==="Receita" && new Date(m.data).getFullYear()===year && (new Date(m.data).getMonth()+1)===month).reduce((a,b)=>a+b.valor,0);
+      const d = movs.filter(m=>m.tipo==="Despesa" && new Date(m.data).getFullYear()===year && (new Date(m.data).getMonth()+1)===month).reduce((a,b)=>a+b.valor,0);
+      const l = r - d; const mg = r>0 ? (l/r)*100 : 0;
+      return { mes: label, receita: r, despesa: d, lucro: l, margem: mg };
+    });
+  },[movs]);
 
-# --- Relatórios ---
-elif menu == "Relatórios":
-    anos = sorted(st.session_state.movs["data"].dt.year.unique()) if not st.session_state.movs.empty else []
-    meses = range(1,13)
-    col1, col2, col3 = st.columns(3)
-    ano_sel = col1.selectbox("Ano", ["Todos"] + list(anos))
-    mes_sel = col2.selectbox("Mês", ["Todos"] + list(meses))
-    col3.button("Exportar PDF", on_click=lambda: st.download_button("Download PDF", data=exportar_pdf(st.session_state.movs), file_name="relatorio.pdf"))
+  const refRelatorios = useRef<HTMLDivElement|null>(null);
+  const exportarPDF = () => {
+    const conteudo = refRelatorios.current?.innerHTML || "<h1>Relatório</h1>";
+    const w = window.open("", "print");
+    if(!w) return;
+    w.document.write(`<!doctype html><html><head><meta charset='utf-8'><title>Relatório</title>
+      <style>body{font-family:Arial,sans-serif;padding:16px} h1,h2{margin:0 0 8px} table{width:100%;border-collapse:collapse;margin-top:8px} th,td{border:1px solid #ddd;padding:6px;text-align:center}</style>
+    </head><body>${conteudo}</body></html>`);
+    w.document.close();
+    w.focus();
+    w.print();
+  };
 
-    # Filtro
-    df_filtrado = st.session_state.movs.copy()
-    if ano_sel != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["data"].dt.year==int(ano_sel)]
-    if mes_sel != "Todos":
-        df_filtrado = df_filtrado[df_filtrado["data"].dt.month==int(mes_sel)]
-
-    st.dataframe(df_filtrado)
-
-# --- Configurações ---
-elif menu == "Configurações":
-    st.write("## Configurações do App")
-    st.info("Aqui você poderá adicionar configurações futuras.")
+  return (
+    <div className="p-6 space-y-6">
+      {/* Menu */}
+      <div className="flex gap-3">
+        <Button variant={activeTab==="dashboard"?"default":"outline"} onClick={()=>setActiveTab("dashboard")}>Dashboard</Button>
+        <Button variant={activeTab==="movimentacoes"?"default":"outline"} onClick={()=>setActiveTab("movimentacoes")}>Movimentações</Button>
+        <Button variant={activeTab==="relatorios"?"default":"outline"} onClick={()=>setActiveTab("relatorios")}>Relatórios</Button>
+        <Button variant={activeTab==="config
